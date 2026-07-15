@@ -49,10 +49,19 @@ class AgentLoop:
             base_url=settings.qwen_base_url,
         )
         self._active: dict[str, Incident] = {}
+        self._active_by_service: dict[str, str] = {}  # service → incident_id
 
     async def handle_signal(self, signal: IncidentSignal) -> None:
+        existing_id = self._active_by_service.get(signal.service)
+        if existing_id and existing_id in self._active:
+            existing = self._active[existing_id]
+            if existing.state not in (AgentState.RESOLVED, AgentState.ESCALATED, AgentState.FAILED):
+                logger.debug(f"[agent] Deduplicated signal for {signal.service} — incident {existing_id} still active")
+                return
+
         incident = Incident(signal=signal)
         self._active[incident.id] = incident
+        self._active_by_service[signal.service] = incident.id
         logger.info(f"[agent] New incident {incident.id} | service={signal.service} | type={signal.signal_type}")
         audit.append(AuditRecord(
             incident_id=incident.id,
