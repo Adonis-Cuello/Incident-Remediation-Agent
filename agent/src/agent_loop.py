@@ -202,8 +202,16 @@ Respond with:
             inc.state = AgentState.ESCALATED
             self._escalate(inc)
         elif inc.autonomy_level == AutonomyLevel.APPROVE:
-            inc.state = AgentState.ESCALATED
-            self._escalate(inc)
+            approval_req = self._escalate(inc)
+            # Wait for human decision, then act or close
+            approved = await self._wait_for_approval(approval_req)
+            if approved:
+                logger.info(f"[agent] Approval granted for {inc.id} — executing {inc.proposed_action}")
+                inc.autonomy_level = AutonomyLevel.AUTO
+                inc.state = AgentState.ACTING
+            else:
+                logger.info(f"[agent] Approval rejected for {inc.id} — closing as ESCALATED")
+                inc.state = AgentState.ESCALATED
         else:
             # AUTO
             inc.state = AgentState.ACTING
@@ -256,7 +264,7 @@ Respond with:
 
     # ── Escalation ───────────────────────────────────────────────────────────
 
-    def _escalate(self, inc: Incident) -> None:
+    def _escalate(self, inc: Incident):
         from .models import ApprovalRequest
 
         req = ApprovalRequest(
@@ -269,6 +277,17 @@ Respond with:
         _approval_queue[req.id] = req
         self._audit(inc, "escalated", {"approval_request_id": req.id})
         logger.warning(f"[agent] Incident {inc.id} escalated → approval {req.id}")
+        return req
+
+    async def _wait_for_approval(self, req) -> bool:
+        """Poll the approval queue until a human decides or timeout (10 min)."""
+        for _ in range(120):  # 120 × 5s = 10 minutes
+            await asyncio.sleep(5)
+            current = _approval_queue.get(req.id)
+            if current and current.approved is not None:
+                return current.approved
+        logger.warning(f"[agent] Approval timeout for {req.id} — treating as rejected")
+        return False
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
