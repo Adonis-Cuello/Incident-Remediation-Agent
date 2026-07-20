@@ -14,20 +14,22 @@ Built for the **Qwen Cloud Hackathon — Track 4: Autopilot Agent**.
 │                                                         │
 │  ┌─────────────┐    IncidentSignal    ┌──────────────┐  │
 │  │HealthPoller │──────────────────────▶  AgentLoop   │  │
-│  │ HTTP + Docker│                     │ State Machine│  │
-│  └─────────────┘                     └──────┬───────┘  │
-│                                             │           │
-│                        ┌────────────────────┼──────┐    │
-│                        ▼          ▼         ▼      │    │
-│                   Qwen LLM    MCP Tools  PolicyEngine   │
-│                  (DashScope)  (Docker)  (YAML config)   │
-│                        │          │         │      │    │
-│                        └────────────────────┘      │    │
-│                                             │           │
-│                                      ┌──────▼───────┐  │
-│                                      │  Approval UI  │  │
-│                                      │  FastAPI:8080 │  │
-│                                      └──────────────┘  │
+│  │HTTP + Docker│                      │ State Machine│  │
+│  └─────────────┘                      └──────┬───────┘  │
+│                                              │           │
+│                         ┌────────────────────┼──────┐   │
+│                         ▼          ▼         ▼      │   │
+│                    Qwen LLM    MCP Tools  PolicyEngine  │
+│                   (DashScope)  (Docker)  (YAML config)  │
+│                         │          │         │      │   │
+│                         └────────────────────┘      │   │
+│                                              │           │
+│                              ┌───────────────▼──────┐   │
+│                              │    Approval UI        │   │
+│                              │    FastAPI :8080      │   │
+│                              └───────────────────────┘  │
+│                                              │           │
+│                                    Slack notifications   │
 │                                                         │
 │  ┌──────────────┐  ┌──────────┐  ┌────────┐            │
 │  │  web-service │  │  worker  │  │ redis  │  (targets) │
@@ -50,9 +52,11 @@ TRIAGE → EVIDENCE → ROOT_CAUSE → AUTONOMY_GATE → ACTING → VERIFYING �
 - **LLM-powered diagnosis** — Qwen triages severity, gathers evidence via MCP tools, identifies root cause
 - **Graduated autonomy** — YAML policy maps each action to `auto` / `approve` / `never`
 - **Circuit breaker** — stops auto-remediating after 3 consecutive failures, forces human review
+- **Cascading failure detection** — monitors all services simultaneously; Redis OOM propagates to worker crash and web-service 500s
 - **Human-in-the-loop** — escalations surface in a real-time web UI with Approve/Reject buttons
 - **Approve → execute** — clicking Approve in the UI triggers the agent to execute the action live
-- **Append-only audit log** — every decision is recorded in JSONL with timestamp and autonomy level
+- **Slack notifications** — incident detected, auto-remediating, resolved, and needs-approval messages posted to Slack in real time
+- **Append-only audit log** — every decision recorded in JSONL with timestamp and autonomy level
 - **MCP tool layer** — Docker tools (logs, stats, inspect, restart, healthcheck, cache flush) exposed via Model Context Protocol
 
 ---
@@ -62,7 +66,7 @@ TRIAGE → EVIDENCE → ROOT_CAUSE → AUTONOMY_GATE → ACTING → VERIFYING �
 ### Prerequisites
 - Docker + Docker Compose
 - Python 3.11+
-- Qwen Cloud API key ([get one here](https://www.qwencloud.com))
+- Qwen Cloud API key ([get one here](https://www.alibabacloud.com/product/dashscope))
 
 ### 1. Clone and configure
 
@@ -70,7 +74,7 @@ TRIAGE → EVIDENCE → ROOT_CAUSE → AUTONOMY_GATE → ACTING → VERIFYING �
 git clone https://github.com/Adonis-Cuello/Incident-Remediation-Agent.git
 cd Incident-Remediation-Agent
 cp .env.example .env
-# Edit .env and fill in your DASHSCOPE_API_KEY
+# Edit .env — fill in DASHSCOPE_API_KEY and optionally SLACK_WEBHOOK_URL
 ```
 
 ### 2. Start all services
@@ -80,32 +84,46 @@ docker compose up -d
 ```
 
 This starts:
-- `web-service` — FastAPI app with injectable failure modes (port 8000)
-- `worker` — background worker with injectable failure modes
-- `redis` — cache layer
+- `web-service` — FastAPI app with injectable failure modes (port 8001)
+- `worker` — background worker that processes Redis jobs
+- `redis` — cache and job queue
 - `sre-agent` — the autonomous SRE agent (port 8080)
 
 ### 3. Open the dashboard
 
 Visit `http://localhost:8080` — you'll see the SRE Agent Incident Queue.
 
-### 4. Break something
+### 4. Trigger a cascading failure
 
 ```bash
-# Inject high error rate into web-service
-./break.sh web-service error_rate
-
-# Simulate worker crash loop
-./break.sh worker crash_loop
+# Kill Redis — watch worker crash, then web-service start returning 500s
+./break.sh cascade
 ```
 
-Watch the agent detect the failure, diagnose the root cause with Qwen, and either auto-fix it or escalate to the UI for your approval.
+The agent will:
+1. Detect Redis is down
+2. Detect worker crash-loop (lost Redis connection)
+3. Detect web-service high error rate (can't enqueue jobs)
+4. Diagnose each with Qwen LLM
+5. Auto-remediate or escalate based on policy
+6. Post to Slack at each step
 
 ### 5. Restore
 
 ```bash
-docker compose up -d web-service worker
+./break.sh restore
 ```
+
+---
+
+## Failure Modes
+
+| Command | What breaks | What the agent sees |
+|---|---|---|
+| `./break.sh web-service error_rate` | 80% of /process requests return 500 | `high_error_rate` signal |
+| `./break.sh worker crash_loop` | Worker exits after 3 tasks | `crash_loop` signal |
+| `./break.sh cascade` | Redis stops → worker dies → web 500s | 3 simultaneous incidents |
+| `./break.sh restore` | Everything back to healthy | Incidents resolve |
 
 ---
 
@@ -132,6 +150,23 @@ circuit_breaker:
 
 ---
 
+## Slack Integration
+
+Add to `.env`:
+
+```
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+ECS_IP=your-server-ip
+```
+
+The agent posts to Slack when it:
+- Detects a new incident
+- Auto-remediates
+- Resolves successfully
+- Needs human approval (includes link to UI)
+
+---
+
 ## Project Structure
 
 ```
@@ -139,7 +174,7 @@ agent/
   src/
     main.py          # entry point — starts poller + agent loop + approval UI
     agent_loop.py    # state machine (TRIAGE→EVIDENCE→ROOT_CAUSE→ACTING→VERIFYING)
-    poller.py        # health poller (HTTP + Docker)
+    poller.py        # health poller (HTTP + Docker, watches web-service/worker/redis)
     mcp_server.py    # MCP tool server (Docker control tools)
     policy.py        # autonomy policy engine + circuit breaker
     approval_ui.py   # FastAPI approval dashboard
@@ -147,11 +182,11 @@ agent/
     models.py        # Pydantic models
     config.py        # settings (reads from .env)
 services/
-  web-service/       # breakable FastAPI web service
-  worker/            # breakable background worker
+  web-service/       # breakable FastAPI web service (Redis job enqueue on /process)
+  worker/            # breakable background worker (Redis job consumer)
 docker-compose.yml
 policy.yaml
-break.sh             # failure injection script
+break.sh             # failure injection + cascade + restore
 ```
 
 ---
