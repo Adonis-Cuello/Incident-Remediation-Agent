@@ -83,7 +83,7 @@ class AgentLoop:
         asyncio.create_task(_notify_slack(
             f":rotating_light: *Incident detected* | `{signal.service}` | `{signal.signal_type}`\n"
             f"Incident ID: `{incident.id[:8]}`"
-        ))
+        ))  # fire-and-forget ok here (async context)
         await self._run(incident)
 
     async def _run(self, inc: Incident) -> None:
@@ -216,9 +216,9 @@ Respond with:
 
         if inc.autonomy_level == AutonomyLevel.NEVER:
             inc.state = AgentState.ESCALATED
-            self._escalate(inc)
+            await self._escalate(inc)
         elif inc.autonomy_level == AutonomyLevel.APPROVE:
-            approval_req = self._escalate(inc)
+            approval_req = await self._escalate(inc)
             # Wait for human decision, then act or close
             approved = await self._wait_for_approval(approval_req)
             if approved:
@@ -244,10 +244,10 @@ Respond with:
 
         self._policy.record_action(action)
         logger.info(f"[agent] AUTO executing {action}({params})")
-        asyncio.create_task(_notify_slack(
+        await _notify_slack(
             f":robot_face: *Auto-remediating* | `{inc.signal.service}` | action: `{action}`\n"
             f"Root cause: {inc.root_cause or 'unknown'}"
-        ))
+        )
 
         try:
             result = await _dispatch(action, params)
@@ -283,19 +283,19 @@ Respond with:
             inc.resolution_note = "Auto-remediation successful."
             inc.state = AgentState.RESOLVED
             logger.info(f"[agent] Incident {inc.id} RESOLVED")
-            asyncio.create_task(_notify_slack(
+            await _notify_slack(
                 f":white_check_mark: *Resolved* | `{inc.signal.service}` | `{inc.proposed_action}` succeeded\n"
                 f"Root cause was: {inc.root_cause or 'unknown'}"
-            ))
+            )
         else:
             self._policy.record_failure()
             logger.warning(f"[agent] Verification failed for {inc.id}; escalating.")
             inc.state = AgentState.ESCALATED
-            self._escalate(inc)
+            await self._escalate(inc)
 
     # ── Escalation ───────────────────────────────────────────────────────────
 
-    def _escalate(self, inc: Incident):
+    async def _escalate(self, inc: Incident):
         from .models import ApprovalRequest
 
         req = ApprovalRequest(
@@ -308,11 +308,11 @@ Respond with:
         _approval_queue[req.id] = req
         self._audit(inc, "escalated", {"approval_request_id": req.id})
         logger.warning(f"[agent] Incident {inc.id} escalated → approval {req.id}")
-        asyncio.create_task(_notify_slack(
+        await _notify_slack(
             f":warning: *Needs human approval* | `{inc.signal.service}` | action: `{req.proposed_action}`\n"
             f"Root cause: {req.root_cause}\n"
-            f"Approve/reject at: http://{getattr(settings, 'ecs_ip', 'localhost')}:8080"
-        ))
+            f"Approve/reject at: http://{settings.ecs_ip}:8080"
+        )
         return req
 
     async def _wait_for_approval(self, req) -> bool:
