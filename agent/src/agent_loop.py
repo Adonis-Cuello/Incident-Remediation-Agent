@@ -242,11 +242,18 @@ Respond with:
     # ── State: VERIFYING ─────────────────────────────────────────────────────
 
     async def _verify(self, inc: Incident) -> None:
-        await asyncio.sleep(5)  # give the service time to come up
+        await asyncio.sleep(8)  # give the service time to come up
         from .mcp_server import _dispatch
 
-        health = await _dispatch("run_healthcheck", {"container": inc.signal.service})
-        ok = health.get("status_code", 500) < 400
+        # For services with no HTTP endpoint, verify via Docker container state
+        http_services = {"web-service"}
+        if inc.signal.service in http_services:
+            health = await _dispatch("run_healthcheck", {"container": inc.signal.service})
+            ok = health.get("status_code", 500) < 400
+        else:
+            inspect = await _dispatch("inspect_container", {"container": inc.signal.service})
+            ok = inspect.get("running", False) and inspect.get("exit_code", 1) == 0
+            health = inspect
 
         self._audit(inc, "verification", {"health": health, "ok": ok})
 
