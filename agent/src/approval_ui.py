@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import audit
 from .agent_loop import get_approval_queue
@@ -187,7 +187,7 @@ async def approve(approval_id: str):
         raise HTTPException(status_code=404, detail="Approval not found")
     req.approved = True
     req.reviewed_at = datetime.now(timezone.utc)
-    return {"approved": True, "id": approval_id}
+    return RedirectResponse(url="/", status_code=303)
 
 
 @ui.post("/reject/{approval_id}")
@@ -197,7 +197,7 @@ async def reject(approval_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Approval not found")
     req.approved = False
     req.reviewed_at = datetime.now(timezone.utc)
-    return {"approved": False, "id": approval_id}
+    return RedirectResponse(url="/", status_code=303)
 
 
 @ui.get("/audit")
