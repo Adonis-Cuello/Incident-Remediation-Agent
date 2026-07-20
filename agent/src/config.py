@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     docker_host: str = Field("unix:///var/run/docker.sock", env="DOCKER_HOST")
     mcp_server_port: int = Field(8090, env="MCP_SERVER_PORT")
 
+    slack_webhook_url: str | None = Field(None, env="SLACK_WEBHOOK_URL")
+    ecs_ip: str = Field("localhost", env="ECS_IP")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

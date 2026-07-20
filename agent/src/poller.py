@@ -20,10 +20,11 @@ from .models import IncidentSignal
 WATCHED_SERVICES: list[tuple[str, str | None]] = [
     ("web-service", "http://web-service:8000"),
     ("worker", None),
+    ("redis", None),
 ]
 
 # Docker-monitored services (no HTTP endpoint)
-DOCKER_WATCHED: list[str] = ["worker"]
+DOCKER_WATCHED: list[str] = ["worker", "redis"]
 
 CONSECUTIVE_FAIL_THRESHOLD = 3
 RESTART_COUNT_THRESHOLD = 3  # restarts before we fire a signal

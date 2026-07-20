@@ -4,7 +4,12 @@ networks:
   sre-net:
     driver: bridge
 
+volumes:
+  pg-data:
+
 services:
+
+  # ── TARGET SERVICES (breakable) ─────────────────────────────────────────────
 
   web-service:
     build: ./services/web_service
@@ -13,8 +18,13 @@ services:
     ports:
       - "8001:8000"
     environment:
-      - FAILURE_MODE=none
-    restart: "no"
+      - FAILURE_MODE=none        # set to: none | oom | error_rate | slow
+      - REDIS_URL=redis://redis:6379
+    depends_on: [redis]
+    restart: "no"                # agent controls restarts
+    labels:
+      sre.managed: "true"
+      sre.service: "web-service"
 
   redis:
     image: redis:7.2-alpine
@@ -24,6 +34,9 @@ services:
       - "6379:6379"
     command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
     restart: "no"
+    labels:
+      sre.managed: "true"
+      sre.service: "redis"
 
   worker:
     build: ./services/worker
@@ -31,22 +44,27 @@ services:
     networks: [sre-net]
     environment:
       - REDIS_URL=redis://redis:6379
-      - FAILURE_MODE=none
+      - FAILURE_MODE=none        # set to: none | crash_loop | hang
     depends_on: [redis]
     restart: "no"
+    labels:
+      sre.managed: "true"
+      sre.service: "worker"
+
+  # ── AGENT ───────────────────────────────────────────────────────────────────
 
   agent:
     build: ./agent
     container_name: sre-agent
     networks: [sre-net]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./audit:/app/audit
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker control
+      - ./audit:/app/audit                           # audit log
       - ./policy.yaml:/app/policy.yaml:ro
       - ./.env:/app/.env:ro
     ports:
-      - "8080:8080"
-      - "8090:8090"
+      - "8080:8080"    # approval UI
+      - "8090:8090"    # MCP server (for manual inspection)
     environment:
       - PYTHONUNBUFFERED=1
     depends_on: [web-service, redis, worker]

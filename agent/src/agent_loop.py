@@ -37,6 +37,18 @@ from .policy import PolicyEngine
 _approval_queue: dict[str, Any] = {}
 
 
+async def _notify_slack(text: str) -> None:
+    """Post a message to Slack via webhook. No-op if SLACK_WEBHOOK_URL is unset."""
+    url = getattr(settings, "slack_webhook_url", None)
+    if not url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(url, json={"text": text})
+    except Exception as exc:
+        logger.warning(f"[slack] notification failed: {exc}")
+
+
 def get_approval_queue() -> dict[str, Any]:
     return _approval_queue
 
@@ -67,6 +79,10 @@ class AgentLoop:
             incident_id=incident.id,
             event="incident_created",
             details={"signal": signal.model_dump()},
+        ))
+        asyncio.create_task(_notify_slack(
+            f":rotating_light: *Incident detected* | `{signal.service}` | `{signal.signal_type}`\n"
+            f"Incident ID: `{incident.id[:8]}`"
         ))
         await self._run(incident)
 
@@ -228,6 +244,10 @@ Respond with:
 
         self._policy.record_action(action)
         logger.info(f"[agent] AUTO executing {action}({params})")
+        asyncio.create_task(_notify_slack(
+            f":robot_face: *Auto-remediating* | `{inc.signal.service}` | action: `{action}`\n"
+            f"Root cause: {inc.root_cause or 'unknown'}"
+        ))
 
         try:
             result = await _dispatch(action, params)
@@ -263,6 +283,10 @@ Respond with:
             inc.resolution_note = "Auto-remediation successful."
             inc.state = AgentState.RESOLVED
             logger.info(f"[agent] Incident {inc.id} RESOLVED")
+            asyncio.create_task(_notify_slack(
+                f":white_check_mark: *Resolved* | `{inc.signal.service}` | `{inc.proposed_action}` succeeded\n"
+                f"Root cause was: {inc.root_cause or 'unknown'}"
+            ))
         else:
             self._policy.record_failure()
             logger.warning(f"[agent] Verification failed for {inc.id}; escalating.")
@@ -284,6 +308,11 @@ Respond with:
         _approval_queue[req.id] = req
         self._audit(inc, "escalated", {"approval_request_id": req.id})
         logger.warning(f"[agent] Incident {inc.id} escalated → approval {req.id}")
+        asyncio.create_task(_notify_slack(
+            f":warning: *Needs human approval* | `{inc.signal.service}` | action: `{req.proposed_action}`\n"
+            f"Root cause: {req.root_cause}\n"
+            f"Approve/reject at: http://{getattr(settings, 'ecs_ip', 'localhost')}:8080"
+        ))
         return req
 
     async def _wait_for_approval(self, req) -> bool:
